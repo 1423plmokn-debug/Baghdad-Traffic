@@ -1,997 +1,958 @@
 """
-🚕 نظام زحامات بغداد الذكي - الإصدار 2.0
-نظام متقدم للتنبؤ بحركة المرور والتوصيل في بغداد
+===============================================================================
+BAGHDAD INTELLIGENT TRAFFIC SYSTEM (BITS) - Version 3.0
+===============================================================================
+Professional Logistics Management System for Baghdad Transportation
+Features: SQL, JavaScript Audio Alerts, Dynamic CSS, AI Predictions
+===============================================================================
 """
 
 import streamlit as st
 import pandas as pd
 import random
-from datetime import datetime
+import math
+import sqlite3
+import json
+from datetime import datetime, time
+from typing import Dict, List, Tuple
 import folium
 from streamlit_folium import st_folium
 
-# ============================================
-# دالة محلل الاستجابة الذكية (Analysis Engine)
-# ============================================
-def generate_response(question, area, event, hour, multiplier, area_info):
-    """محلل ذكي يقرأ الحالة المختارة ويجيب بناءً عليها فقط"""
+# ============================================================
+# SECTION 1: DATABASE MANAGEMENT (SQLite3)
+# ============================================================
+
+class TrafficDatabase:
+    """SQLite Database Manager for Active Road Incidents"""
     
-    question_lower = question.lower()
-    area_data = area_info.get(area, {})
-    area_type = area_data.get('type', 'غير معروف')
-    typical_demand = area_data.get('typical_demand', 'متوسط')
+    def __init__(self, db_path: str = "bits_traffic.db"):
+        self.db_path = db_path
+        self.init_database()
     
-    increase_pct = int((multiplier - 1) * 100)
+    def get_connection(self):
+        return sqlite3.connect(self.db_path)
     
-    if any(word in question_lower for word in ['كيف', 'وضع', 'شو', 'حالة']):
-        if multiplier >= 2.5:
-            return (f"📊 **تحليل الوضع الحالي:**\n\n"
-                   f"• المنطقة: {area} ({area_type})\n"
-                   f"• الساعة: {hour}:00\n"
-                   f"• الحالة: {event}\n"
-                   f"• مستوى الطلب: {typical_demand}\n"
-                   f"• معامل السعر: {multiplier}x (+{increase_pct}%)\n\n"
-                   f"⚠️ **النتيجة:** الوضع حرج! الزحام شديد جداً.")
-        elif multiplier >= 1.8:
-            return (f"📊 **تحليل الوضع الحالي:**\n\n"
-                   f"• المنطقة: {area} ({area_type})\n"
-                   f"• الساعة: {hour}:00\n"
-                   f"• الحالة: {event}\n"
-                   f"• معامل السعر: {multiplier}x (+{increase_pct}%)\n\n"
-                   f"⚠️ **النتيجة:** ازدحام ملحوظ.")
-        else:
-            return (f"📊 **تحليل الوضع الحالي:**\n\n"
-                   f"• المنطقة: {area} ({area_type})\n"
-                   f"• الساعة: {hour}:00\n"
-                   f"• الحالة: {event}\n"
-                   f"• معامل السعر: {multiplier}x\n\n"
-                   f"✅ **النتيجة:** الوضع طبيعي.")
+    def init_database(self):
+        """Initialize database schema"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS active_road_incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                zone TEXT NOT NULL,
+                incident_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                description TEXT,
+                latitude REAL,
+                longitude REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER DEFAULT 1,
+                affected_road TEXT
+            )
+        """)
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pricing_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                origin_zone TEXT NOT NULL,
+                destination_zone TEXT NOT NULL,
+                base_price REAL,
+                final_price REAL,
+                route_type TEXT,
+                distance_km REAL,
+                multiplier REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                weather TEXT,
+                time_period TEXT
+            )
+        """)
+        
+        cursor.execute("SELECT COUNT(*) FROM active_road_incidents")
+        if cursor.fetchone()[0] == 0:
+            sample_incidents = [
+                ("المنصور", "road_closure", "high", "اغلاق جزئي للطريق", 33.3209, 44.3661, "شارع الجزائر"),
+                ("الكرادة", "construction", "medium", "اعمال بناء", 33.3156, 44.4012, "شارع كراده"),
+                ("الجادرية", "accident", "high", "حادث مروري", 33.3089, 44.3432, "جسر الجادرية"),
+                ("الأعظمية", "road_closure", "critical", "اغلاق كامل", 33.3428, 44.3278, "شارع الأعظمية"),
+            ]
+            cursor.executemany("""
+                INSERT INTO active_road_incidents 
+                (zone, incident_type, severity, description, latitude, longitude, affected_road)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, sample_incidents)
+        
+        conn.commit()
+        conn.close()
     
-    if any(word in question_lower for word in ['لماذا', 'ليش', 'سعر', 'غالي', 'مرتفع']):
-        if multiplier > 1.0:
-            return (f"💰 **تحليل السعر:**\n\n"
-                   f"السعر مرتفع بسبب:\n"
-                   f"1. المنطقة: {area} - منطقة {typical_demand} الطلب\n"
-                   f"2. الوقت: الساعة {hour}:00\n"
-                   f"3. الحالة: {event}\n\n"
-                   f"📈 **التفاصيل:**\n"
-                   f"• السعر الأساسي: 3,000 IQD\n"
-                   f"• معامل الزيادة: {multiplier}x\n"
-                   f"• نسبة الارتفاع: +{increase_pct}%\n"
-                   f"• السعر النهائي: {int(3000 * multiplier):,} IQD")
-        else:
-            return f"💰 السعر حالياً طبيعي (3,000 IQD)"
+    def get_active_incidents(self) -> List[Dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, zone, incident_type, severity, description, 
+                   latitude, longitude, affected_road, created_at
+            FROM active_road_incidents 
+            WHERE is_active = 1
+            ORDER BY CASE severity
+                WHEN 'critical' THEN 1
+                WHEN 'high' THEN 2
+                WHEN 'medium' THEN 3
+                ELSE 4
+            END
+        """)
+        incidents = []
+        for row in cursor.fetchall():
+            incidents.append({
+                'id': row[0], 'zone': row[1], 'incident_type': row[2],
+                'severity': row[3], 'description': row[4],
+                'latitude': row[5], 'longitude': row[6],
+                'affected_road': row[7], 'created_at': row[8]
+            })
+        conn.close()
+        return incidents
     
-    if any(word in question_lower for word in ['أفضل', 'وقت', 'يناسب', 'امتى']):
-        return (f"🕐 **أفضل أوقات التنقل في {area}:**\n\n"
-               f"✅ الصباح الباكر: 6:00 - 8:00 صباحاً\n"
-               f"✅ بعد الظهر: 14:00 - 16:00\n"
-               f"✅ المساء: 21:00 - 23:00\n\n"
-               f"❌ تجنب:\n"
-               f"• ساعة الذروة الصباحية: 7:00 - 9:00\n"
-               f"• ساعة الذروة المسائية: 16:00 - 19:00")
+    def add_incident(self, zone: str, incident_type: str, severity: str, 
+                    description: str, latitude: float, longitude: float, affected_road: str) -> bool:
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO active_road_incidents 
+                (zone, incident_type, severity, description, latitude, longitude, affected_road)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (zone, incident_type, severity, description, latitude, longitude, affected_road))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error adding incident: {e}")
+            return False
     
-    if any(word in question_lower for word in ['سائق', 'سائقين', 'توصيل', 'driver']):
-        drivers = area_data.get('drivers', 50)
-        return (f"🚗 **حالة السائقين في {area}:**\n\n"
-               f"• عدد السائقين المطلوب: {drivers}\n"
-               f"• نوع المنطقة: {area_type}\n"
-               f"• الطلب المعتاد: {typical_demand}\n\n"
-               f"💡 في حالة {event}، أنصح بزيادة السائقين بنسبة 50%.")
+    def remove_incident(self, incident_id: int) -> bool:
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE active_road_incidents SET is_active = 0 WHERE id = ?", (incident_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error removing incident: {e}")
+            return False
     
-    if any(word in question_lower for word in ['مطر', 'أمطار', 'rain']):
-        if event == "أمطار غزيرة":
-            return (f"🌧️ **تأثير الأمطار على {area}:**\n\n"
-                   f"⚠️ الأمطار الغزيرة تؤدي لارتفاع حاد في الأسعار!\n"
-                   f"• معامل السعر: {multiplier}x\n"
-                   f"• نسبة الارتفاع: +{increase_pct}%\n\n"
-                   f"💡 نصيحة: تجنب التنقل قدر الإمكان.")
-        else:
-            return f"☀️ الطقس حالياً صافٍ في {area}."
-    
-    if any(word in question_lower for word in ['منطقة', 'المنطقة', 'area']):
-        return (f"🗺️ **معلومات عن {area}:**\n\n"
-               f"• النوع: {area_type}\n"
-               f"• الطلب المعتاد: {typical_demand}\n"
-               f"• السائقون المطلوبون: {area_data.get('drivers', 50)}")
-    
-    if any(word in question_lower for word in ['عام', 'everything', 'كل']):
-        return (f"📋 **ملخص الحالة في {area}:**\n\n"
-               f"🏷️ المنطقة: {area}\n"
-               f"🕐 الوقت: {hour}:00\n"
-               f"☁️ الحالة: {event}\n"
-               f"💰 معامل السعر: {multiplier}x (+{increase_pct}%)\n"
-               f"🚦 الطلب: {typical_demand}\n\n"
-               f"💡 اسألني عن أي شيء محدد!")
-    
-    return (f"🤔 سؤالك: {question}\n\n"
-           f"📊 **بناءً على حالتك الحالية:**\n"
-           f"• المنطقة: {area}\n"
-           f"• الوقت: {hour}:00\n"
-           f"• الحدث: {event}\n"
-           f"• معامل السعر: {multiplier}x\n\n"
-           f"💡 اسألني: 'كيف الوضع؟' أو 'لماذا السعر مرتفع؟'")
+    def get_incident_count_by_zone(self) -> Dict[str, int]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT zone, COUNT(*) FROM active_road_incidents WHERE is_active = 1 GROUP BY zone")
+        result = {row[0]: row[1] for row in cursor.fetchall()}
+        conn.close()
+        return result
 
 
-# ============================================
-# Baghdad Areas Data with Real Coordinates
-# ============================================
-BAGHDAD_AREAS = {
-    "المنصور": {
-        "icon": "🏛️", 
-        "typical_demand": "عالية", 
-        "drivers": 85, 
-        "type": "تجاري",
-        "lat": 33.3209, 
-        "lon": 44.3661
-    },
-    "الكرادة": {
-        "icon": "🛒", 
-        "typical_demand": "عالية", 
-        "drivers": 80, 
-        "type": "مطاعم ومقاهي",
-        "lat": 33.3156, 
-        "lon": 44.4012
-    },
-    "الجادرية": {
-        "icon": "🏢", 
-        "typical_demand": "عالية", 
-        "drivers": 75, 
-        "type": "الأعمال",
-        "lat": 33.3089, 
-        "lon": 44.3432
-    },
-    "الأعظمية": {
-        "icon": "🕌", 
-        "typical_demand": "متوسطة-عالية", 
-        "drivers": 60, 
-        "type": "تاريخي وديني",
-        "lat": 33.3428, 
-        "lon": 44.3278
-    },
-    " زيونة": {
-        "icon": "🏠", 
-        "typical_demand": "متوسطة", 
-        "drivers": 50, 
-        "type": "سكني",
-        "lat": 33.3289, 
-        "lon": 44.3923
-    },
-    "حي الجامعة": {
-        "icon": "🎓", 
-        "typical_demand": "متوسطة", 
-        "drivers": 45, 
-        "type": "تعليمي",
-        "lat": 33.3056, 
-        "lon": 44.3567
-    },
-    "الدورة": {
-        "icon": "🌊", 
-        "typical_demand": "متوسطة", 
-        "drivers": 40, 
-        "type": "صناعي",
-        "lat": 33.2834, 
-        "lon": 44.3712
-    },
-    "الوزيرية": {
-        "icon": "⚰️", 
-        "typical_demand": "منخفضة", 
-        "drivers": 30, 
-        "type": "سكني",
-        "lat": 33.3312, 
-        "lon": 44.3845
-    },
-    "المزة": {
-        "icon": "🏰", 
-        "typical_demand": "متوسطة-عالية", 
-        "drivers": 55, 
-        "type": "سكني فاخر",
-        "lat": 33.3456, 
-        "lon": 44.4123
-    },
-    "اليرموك": {
-        "icon": "🏘️", 
-        "typical_demand": "متوسطة", 
-        "drivers": 48, 
-        "type": "سكني",
-        "lat": 33.3123, 
-        "lon": 44.4234
+# ============================================================
+# SECTION 2: BAGHDAD GEOGRAPHICAL INTELLIGENCE
+# ============================================================
+
+class BaghdadGeographicalIntelligence:
+    """Comprehensive Baghdad Zones Dictionary with coordinates"""
+    
+    ZONES = {
+        # KARKH (Western Baghdad)
+        "الكاظمية": {"region": "Karkh", "type": "historical", "lat": 33.3428, "lon": 44.3278, "typical_demand": "medium", "base_price": 3500, "icon": "🕌"},
+        "الزعفرانية": {"region": "Karkh", "type": "residential", "lat": 33.2987, "lon": 44.3456, "typical_demand": "high", "base_price": 3000, "icon": "🏘️"},
+        "حيبس": {"region": "Karkh", "type": "residential", "lat": 33.2856, "lon": 44.3534, "typical_demand": "medium", "base_price": 2800, "icon": "🏠"},
+        "الدورة": {"region": "Karkh", "type": "industrial", "lat": 33.2834, "lon": 44.3712, "typical_demand": "medium", "base_price": 3200, "icon": "🏭"},
+        "التاجي": {"region": "Karkh", "type": "suburban", "lat": 33.2656, "lon": 44.3289, "typical_demand": "low", "base_price": 2500, "icon": "🌾"},
+        
+        # RUSAFA (Eastern Baghdad)
+        "الكرادة": {"region": "Rusafa", "type": "commercial", "lat": 33.3156, "lon": 44.4012, "typical_demand": "very_high", "base_price": 4500, "icon": "🛒"},
+        "oley": {"region": "Rusafa", "type": "residential", "lat": 33.3289, "lon": 44.3923, "typical_demand": "high", "base_price": 3800, "icon": "🏠"},
+        "المزة": {"region": "Rusafa", "type": "upscale_residential", "lat": 33.3456, "lon": 44.4123, "typical_demand": "high", "base_price": 4200, "icon": "🏰"},
+        "اليرموك": {"region": "Rusafa", "type": "residential", "lat": 33.3123, "lon": 44.4234, "typical_demand": "medium", "base_price": 3200, "icon": "🏘️"},
+        "سبع ابكار": {"region": "Rusafa", "type": "residential", "lat": 33.3356, "lon": 44.4089, "typical_demand": "medium", "base_price": 3000, "icon": "🏡"},
+        
+        # CENTER (Downtown Baghdad)
+        "المنصور": {"region": "Center", "type": "commercial", "lat": 33.3209, "lon": 44.3661, "typical_demand": "very_high", "base_price": 5000, "icon": "🏛️"},
+        "الجادرية": {"region": "Center", "type": "business", "lat": 33.3089, "lon": 44.3432, "typical_demand": "very_high", "base_price": 4800, "icon": "🏢"},
+        "الأعظمية": {"region": "Center", "type": "historical", "lat": 33.3428, "lon": 44.3278, "typical_demand": "high", "base_price": 4000, "icon": "🕌"},
+        "شارع الرشيد": {"region": "Center", "type": "commercial", "lat": 33.3150, "lon": 44.3600, "typical_demand": "very_high", "base_price": 5500, "icon": "🛣️"},
+        "السعدون": {"region": "Center", "type": "commercial", "lat": 33.3180, "lon": 44.3680, "typical_demand": "very_high", "base_price": 5200, "icon": "🏪"},
+        
+        # SUBURBS (Outer Areas)
+        "الوزيرية": {"region": "Suburbs", "type": "residential", "lat": 33.3312, "lon": 44.3845, "typical_demand": "medium", "base_price": 2800, "icon": "🏘️"},
+        "حي الجامعة": {"region": "Suburbs", "type": "educational", "lat": 33.3056, "lon": 44.3567, "typical_demand": "medium", "base_price": 3000, "icon": "🎓"},
+        "البياع": {"region": "Suburbs", "type": "suburban", "lat": 33.2456, "lon": 44.3656, "typical_demand": "low", "base_price": 2200, "icon": "🌳"},
+        "ابي غريب": {"region": "Suburbs", "type": "suburban", "lat": 33.2567, "lon": 44.3890, "typical_demand": "low", "base_price": 2100, "icon": "🏕️"},
+        "المحمدية": {"region": "Suburbs", "type": "residential", "lat": 33.2890, "lon": 44.4123, "typical_demand": "low", "base_price": 2400, "icon": "🏡"},
+        "الصدر": {"region": "Suburbs", "type": "residential", "lat": 33.3567, "lon": 44.3890, "typical_demand": "medium", "base_price": 2900, "icon": "🏘️"},
+        "طريقيث": {"region": "Suburbs", "type": "suburban", "lat": 33.2234, "lon": 44.3567, "typical_demand": "low", "base_price": 2000, "icon": "🌾"},
     }
-}
+    
+    TRAFFIC_HOTSPOTS = {
+        "شارع فلسطين": {"lat": 33.3256, "lon": 44.4056, "congestion_level": "critical"},
+        "جسر السنك": {"lat": 33.3189, "lon": 44.3612, "congestion_level": "high"},
+        "جسر尔德": {"lat": 33.3123, "lon": 44.3589, "congestion_level": "high"},
+        "تقاطع liberty": {"lat": 33.3289, "lon": 44.3989, "congestion_level": "medium"},
+        "المنصور تقاطع": {"lat": 33.3212, "lon": 44.3656, "congestion_level": "critical"},
+    }
+    
+    @classmethod
+    def get_zone_by_coordinates(cls, lat: float, lon: float) -> Tuple[str, str]:
+        """Reverse Geocoding Simulation: Find nearest zone"""
+        min_distance = float('inf')
+        nearest_zone = "غير معروف"
+        nearest_region = "غير معروف"
+        
+        for zone_name, zone_data in cls.ZONES.items():
+            distance = cls.haversine_distance(lat, lon, zone_data['lat'], zone_data['lon'])
+            if distance < min_distance:
+                min_distance = distance
+                nearest_zone = zone_name
+                nearest_region = zone_data['region']
+        
+        return nearest_zone, nearest_region
+    
+    @staticmethod
+    def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Calculate distance using Haversine formula (returns km)"""
+        R = 6371
+        lat1_rad, lat2_rad = math.radians(lat1), math.radians(lat2)
+        delta_lat = math.radians(lat2 - lat1)
+        delta_lon = math.radians(lon2 - lon1)
+        a = math.sin(delta_lat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon/2)**2
+        c = 2 * math.asin(math.sqrt(a))
+        return R * c
+    
+    @classmethod
+    def get_zones_by_region(cls, region: str) -> List[str]:
+        return [zone for zone, data in cls.ZONES.items() if data['region'] == region]
 
 
-# ============================================
-# Create Baghdad Map with Dynamic Markers
-# ============================================
-@st.cache_data
-def create_baghdad_map(areas, selected_area, price_multiplier, demand_color):
-    """إنشاء خريطة بغداد التفاعلية"""
+# ============================================================
+# SECTION 3: AUTOMATION ENGINE
+# ============================================================
+
+class AutomationEngine:
+    """Full Automation Engine for Auto-Weather and Auto-Time"""
     
-    # مركز الخريطة على بغداد
-    baghdad_center = [33.3128, 44.3615]
+    WEATHER_CONDITIONS = {
+        "صافٍ": {"icon": "☀️", "multiplier": 1.0, "color": "green"},
+        "غائم": {"icon": "☁️", "multiplier": 1.0, "color": "gray"},
+        "مطر خفيف": {"icon": "🌧️", "multiplier": 1.2, "color": "blue"},
+        "مطر غزير": {"icon": "🌧️", "multiplier": 1.5, "color": "blue"},
+        "عاصف": {"icon": "💨", "multiplier": 1.1, "color": "orange"},
+        "عاصف رملي": {"icon": "🌪️", "multiplier": 1.3, "color": "orange"},
+    }
     
-    # إنشاء الخريطة
-    m = folium.Map(
-        location=baghdad_center,
-        zoom_start=12,
-        tiles='CartoDB dark_matter'
-    )
+    PEAK_HOURS_MORNING = (time(7, 30), time(9, 30))
+    PEAK_HOURS_AFTERNOON = (time(14, 0), time(16, 0))
+    PEAK_MULTIPLIER = 1.4
     
-    # تحديد لون الحالة المرورية
-    if demand_color == "critical":
-        status_color = "red"
-        status_icon = "exclamation-triangle"
-    elif demand_color == "high":
-        status_color = "orange"
-        status_icon = "warning"
+    @classmethod
+    def simulate_weather(cls) -> str:
+        """Simulate live Baghdad weather"""
+        weather_types = list(cls.WEATHER_CONDITIONS.keys())
+        weights = [0.4, 0.2, 0.15, 0.1, 0.1, 0.05]
+        return random.choices(weather_types, weights=weights)[0]
+    
+    @classmethod
+    def get_weather_multiplier(cls, weather: str) -> float:
+        return cls.WEATHER_CONDITIONS.get(weather, {}).get('multiplier', 1.0)
+    
+    @classmethod
+    def get_weather_color(cls, weather: str) -> str:
+        return cls.WEATHER_CONDITIONS.get(weather, {}).get('color', 'green')
+    
+    @classmethod
+    def is_peak_hour(cls, current_time: datetime = None) -> bool:
+        """Check if current time is peak hour (7:30-9:30 AM or 2:00-4:00 PM)"""
+        if current_time is None:
+            current_time = datetime.now()
+        current_time_only = current_time.time()
+        morning_peak = cls.PEAK_HOURS_MORNING[0] <= current_time_only <= cls.PEAK_HOURS_MORNING[1]
+        afternoon_peak = cls.PEAK_HOURS_AFTERNOON[0] <= current_time_only <= cls.PEAK_HOURS_AFTERNOON[1]
+        return morning_peak or afternoon_peak
+    
+    @classmethod
+    def get_time_period(cls, current_time: datetime = None) -> str:
+        if current_time is None:
+            current_time = datetime.now()
+        hour = current_time.hour
+        if 5 <= hour < 12:
+            return "صباحاً"
+        elif 12 <= hour < 17:
+            return "ظهراً"
+        elif 17 <= hour < 21:
+            return "مساءً"
+        return "ليلاً"
+
+
+class AIPredictiveAnalysis:
+    """AI Predictive Analysis - Trend Predictor for traffic warnings"""
+    
+    TRAFFIC_PATTERNS = {
+        "Monday": {"high_risk_zones": ["المنصور", "الكرادة", "الجادرية"], "peak_times": [(7, 9), (14, 16), (17, 19)]},
+        "Tuesday": {"high_risk_zones": ["المنصور", "الكرادة"], "peak_times": [(7, 9), (14, 16), (17, 19)]},
+        "Wednesday": {"high_risk_zones": ["المنصور", "الكرادة", "الجادرية"], "peak_times": [(7, 9), (14, 16), (17, 19)]},
+        "Thursday": {"high_risk_zones": ["المنصور", "الكرادة", "الأعظمية"], "peak_times": [(7, 9), (14, 16), (17, 20)]},
+        "Friday": {"high_risk_zones": ["الأعظمية", "الكاظمية"], "peak_times": [(10, 13), (17, 21)]},
+        "Saturday": {"high_risk_zones": ["الكرادة", "المزة"], "peak_times": [(10, 14), (18, 22)]},
+        "Sunday": {"high_risk_zones": ["المنصور", "الجادرية"], "peak_times": [(7, 9), (14, 16), (17, 19)]}
+    }
+    
+    @classmethod
+    def predict_traffic(cls, zone: str, current_hour: int = None) -> Dict:
+        """Predict traffic conditions for a zone"""
+        if current_hour is None:
+            current_hour = datetime.now().hour
+        
+        day_name = datetime.now().strftime("%A")
+        pattern = cls.TRAFFIC_PATTERNS.get(day_name, cls.TRAFFIC_PATTERNS["Monday"])
+        
+        is_high_risk = zone in pattern['high_risk_zones']
+        is_peak_time = any(start <= current_hour <= end for start, end in pattern['peak_times'])
+        
+        risk_level = "low"
+        warnings = []
+        
+        if is_high_risk and is_peak_time:
+            risk_level = "critical"
+            warnings.append("🚨 ازدحام متوقع شديد")
+            warnings.append(f"⏰ توقع تأخر {random.randint(15, 35)} دقيقة")
+        elif is_high_risk:
+            risk_level = "high"
+            warnings.append("⚠️ ازدحام محتمل")
+        elif is_peak_time:
+            risk_level = "medium"
+            warnings.append("ℹ️ ازدحام خفيف خلال ساعة الذروة")
+        
+        if day_name == "Friday":
+            warnings.append("🕌 يوم جمعة - ازدحام حول المساجد")
+        
+        return {
+            "zone": zone, "day": day_name, "hour": current_hour,
+            "risk_level": risk_level, "is_high_risk": is_high_risk,
+            "is_peak_time": is_peak_time, "warnings": warnings,
+            "confidence": random.randint(75, 95)
+        }
+    
+    @classmethod
+    def get_all_predictions(cls) -> List[Dict]:
+        predictions = []
+        for zone in ["المنصور", "الكرادة", "الجادرية", "الأعظمية", "المزة"]:
+            predictions.append(cls.predict_traffic(zone))
+        return predictions
+
+
+# ============================================================
+# SECTION 4: SMART ROUTING SYSTEM
+# ============================================================
+
+class SmartRoutingSystem:
+    """Smart Routing with dual pricing (Fastest/Economic)"""
+    
+    def __init__(self, db: TrafficDatabase):
+        self.db = db
+        self.geo = BaghdadGeographicalIntelligence
+    
+    def calculate_route_pricing(self, origin: str, destination: str, 
+                                 weather_multiplier: float, time_multiplier: float,
+                                 is_peak: bool) -> Dict:
+        """Calculate dual pricing for both route options"""
+        origin_data = self.geo.ZONES.get(origin, {})
+        dest_data = self.geo.ZONES.get(destination, {})
+        
+        distance = self.geo.haversine_distance(
+            origin_data.get('lat', 33.3128), origin_data.get('lon', 44.3615),
+            dest_data.get('lat', 33.3128), dest_data.get('lon', 44.3615)
+        )
+        
+        base_price = (origin_data.get('base_price', 3000) + dest_data.get('base_price', 3000)) / 2
+        
+        incidents = self.db.get_active_incidents()
+        incident_count = len([i for i in incidents if i['zone'] in [origin, destination]])
+        
+        # Option A: Fastest Route
+        fastest_base = base_price * 1.5
+        fastest_distance = distance * 0.85
+        fastest_multiplier = weather_multiplier * time_multiplier
+        if is_peak:
+            fastest_multiplier *= 1.2
+        fastest_price = int(fastest_base * fastest_multiplier)
+        fastest_time = int((fastest_distance / 40) * 60)
+        
+        # Option B: Economic Route
+        economic_base = base_price * 1.0
+        economic_distance = distance * 1.2
+        economic_multiplier = weather_multiplier * time_multiplier
+        if incident_count > 0:
+            economic_multiplier *= 1.3
+        economic_price = int(economic_base * economic_multiplier)
+        economic_time = int((economic_distance / 25) * 60)
+        
+        return {
+            "fastest": {"name": "أسرع مسار", "price": fastest_price, "time_minutes": fastest_time,
+                       "distance_km": round(fastest_distance, 1), "multiplier": round(fastest_multiplier, 2),
+                       "description": "🏎️ مسار مباشر - تجنب الزحام"},
+            "economic": {"name": "المسار الأقتصادي", "price": economic_price, "time_minutes": economic_time,
+                        "distance_km": round(economic_distance, 1), "multiplier": round(economic_multiplier, 2),
+                        "description": "💰 مسار اقتصادي - توفير في التكلفة"},
+            "distance_km": round(distance, 1)
+        }
+
+
+# ============================================================
+# SECTION 5: UI COMPONENTS
+# ============================================================
+
+def generate_dynamic_css(weather: str, is_peak: bool, is_rain: bool) -> str:
+    """Dynamic CSS: Blue (Rain), Orange (Peak), Green (Clear)"""
+    
+    if is_rain:
+        primary_color = "#1e88e5"
+        gradient = "linear-gradient(135deg, #0a1929 0%, #1a2a4a 50%, #0d2137 100%)"
+        accent_color = "#42a5f5"
+    elif is_peak:
+        primary_color = "#ff9800"
+        gradient = "linear-gradient(135deg, #1a1410 0%, #2a1a10 50%, #1a1208 100%)"
+        accent_color = "#ffb74d"
     else:
-        status_color = "green"
-        status_icon = "check"
+        primary_color = "#4caf50"
+        gradient = "linear-gradient(135deg, #0a1a0f 0%, #1a2a1a 50%, #0d1a0d 100%)"
+        accent_color = "#81c784"
     
-    # إضافة علامات للمناطق
-    for area_name, area_data in areas.items():
-        lat = area_data.get('lat', 33.3128)
-        lon = area_data.get('lon', 44.3615)
+    return f"""
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&display=swap" rel="stylesheet">
+    <style>
+    html[dir="rtl"] {{ direction: rtl; text-align: right; }}
+    * {{ font-family: 'Cairo', sans-serif !important; }}
+    .stApp {{ background: {gradient} !important; color: #FAFAFA; }}
+    .glass-card {{ background: rgba(30, 30, 30, 0.7) !important; backdrop-filter: blur(15px) !important;
+        border: 1px solid {accent_color}40 !important; border-radius: 20px !important; padding: 20px !important;
+        margin: 10px 0 !important; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important; }}
+    h1, h2, h3, h4 {{ color: {accent_color} !important; font-family: 'Cairo', sans-serif !important; }}
+    .stButton > button {{ background: linear-gradient(135deg, {primary_color} 0%, {accent_color} 100%) !important;
+        color: #ffffff !important; font-weight: bold !important; border: 2px solid {accent_color} !important;
+        border-radius: 12px !important; padding: 12px 30px !important; transition: all 0.3s ease !important; }}
+    .stButton > button:hover {{ box-shadow: 0 0 25px {accent_color}80 !important; transform: translateY(-2px) !important; }}
+    .metric-card {{ background: rgba(30, 30, 30, 0.8) !important; backdrop-filter: blur(10px) !important;
+        border: 1px solid {accent_color}40 !important; border-radius: 20px !important; padding: 25px !important;
+        transition: all 0.3s ease !important; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3) !important; }}
+    .metric-card:hover {{ transform: translateY(-5px) !important; box-shadow: 0 15px 40px {accent_color}20 !important;
+        border-color: {accent_color}80 !important; }}
+    .dynamic-warning {{ background: linear-gradient(135deg, {primary_color}cc 0%, {accent_color}cc 100%) !important;
+        color: white; font-size: 24px; font-weight: bold; text-align: center; padding: 25px;
+        border-radius: 18px; border: 3px solid {accent_color}; margin: 15px 0; }}
+    .landing-page {{ position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #0a0a0a 100%);
+        display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 9999; }}
+    .landing-title {{ font-size: 64px; font-weight: 900; color: {accent_color}; text-align: center;
+        padding: 30px; text-shadow: 0 0 30px {accent_color}80; animation: glow 2s ease-in-out infinite alternate; }}
+    .landing-subtitle {{ font-size: 24px; color: #aaa; text-align: center; margin-top: 20px; }}
+    @keyframes glow {{ from {{ text-shadow: 0 0 20px {accent_color}50; }} to {{ text-shadow: 0 0 40px {accent_color}80; }} }}
+    .route-card {{ background: linear-gradient(135deg, rgba(40, 40, 40, 0.9) 0%, rgba(40, 40, 40, 0.9) 100%) !important;
+        border: 2px solid {accent_color} !important; border-radius: 25px !important; padding: 30px !important; margin: 15px 0 !important; }}
+    .route-card-fastest {{ border-left: 5px solid {primary_color} !important; }}
+    .route-card-economic {{ border-left: 5px solid #4caf50 !important; }}
+    .status-badge {{ display: inline-block; padding: 5px 15px; border-radius: 20px; font-weight: bold; font-size: 14px; }}
+    .status-rain {{ background: #1e88e5; color: white; }}
+    .status-peak {{ background: #ff9800; color: black; }}
+    .status-clear {{ background: #4caf50; color: white; }}
+    .admin-section {{ background: rgba(20, 20, 20, 0.9); border: 2px solid #ff5722;
+        border-radius: 20px; padding: 25px; margin: 15px 0; }}
+    .incident-card {{ background: rgba(40, 20, 20, 0.9); border-right: 4px solid; border-radius: 12px; padding: 15px; margin: 10px 0; }}
+    .incident-critical {{ border-color: #f44336; }}
+    .incident-high {{ border-color: #ff9800; }}
+    .incident-medium {{ border-color: #ffeb3b; }}
+    .map-container {{ border-radius: 20px !important; overflow: hidden !important; border: 3px solid {accent_color} !important; }}
+    </style>
+    """
+
+
+def inject_javascript_alerts(price_multiplier: float, has_road_closure: bool) -> str:
+    """JavaScript for audio notifications when high pricing or road closures detected"""
+    js_code = ""
+    
+    if price_multiplier >= 2.0 or has_road_closure:
+        js_code = f"""
+        <script>
+        function playAlert() {{
+            // Create audio context for notification sound
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            oscillator.frequency.value = {800 if has_road_closure else 600};
+            oscillator.type = 'square';
+            gainNode.gain.value = 0.3;
+            
+            oscillator.start();
+            setTimeout(() => oscillator.stop(), 500);
+            
+            // Show visual alert
+            setTimeout(() => {{
+                alert('{'⚠️ تنبيه: إغلاق طريق!' if has_road_closure else '⚠️ تنبيه: ارتفاع حاد في الأسعار!'}\\nالمعامل: {price_multiplier}x');
+            }}, 600);
+        }}
         
-        # تحديد لون العلامة بناءً على المنطقة المحددة
-        if area_name == selected_area:
-            marker_color = status_color
-            is_selected = True
-        else:
-            # ألوان المناطق الأخرى بناءً على الطلب
-            if area_data['typical_demand'] == "عالية":
-                marker_color = "orange"
-            elif area_data['typical_demand'] == "متوسطة-عالية":
-                marker_color = "lightorange"
-            else:
-                marker_color = "green"
-            is_selected = False
-        
-        # إنشاء popup للمعلومات
-        popup_html = f"""
-        <div style="font-family: Cairo, sans-serif; text-align: right; direction: rtl;">
-            <h4 style="color: #FFD700; margin-bottom: 10px;">{area_data['icon']} {area_name}</h4>
-            <p><strong>النوع:</strong> {area_data['type']}</p>
-            <p><strong>الطلب:</strong> {area_data['typical_demand']}</p>
-            <p><strong>السائقون:</strong> {area_data['drivers']}</p>
-            <p><strong>معامل السعر:</strong> {price_multiplier}x</p>
-        </div>
+        // Auto-play on page load
+        window.onload = function() {{
+            setTimeout(playAlert, 1500);
+        }};
+        </script>
         """
-        
-        # إضافة العلامة
-        folium.Marker(
-            location=[lat, lon],
-            popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{area_name} - {area_data['typical_demand']} الطلب",
-            icon=folium.Icon(color=marker_color, icon=area_data['icon'], prefix='fa')
-        ).add_to(m)
     
-    return m
+    return js_code
 
 
-# ============================================
-# Trip Forecaster Function
-# ============================================
-def calculate_trip_time(start_location, end_location, event_multiplier):
-    """حساب وقت الرحلة المتوقع"""
-    import math
-    
-    #_coordinates
-    start_lat = BAGHDAD_AREAS.get(start_location, {}).get('lat', 33.3128)
-    start_lon = BAGHDAD_AREAS.get(start_location, {}).get('lon', 44.3615)
-    end_lat = BAGHDAD_AREAS.get(end_location, {}).get('lat', 33.3128)
-    end_lon = BAGHDAD_AREAS.get(end_location, {}).get('lon', 44.3615)
-    
-    # Calculate distance using Haversine formula
-    R = 6371  # Earth's radius in km
-    
-    lat1, lon1, lat2, lon2 = map(math.radians, [start_lat, start_lon, end_lat, end_lon])
-    
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    
-    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
-    c = 2 * math.asin(math.sqrt(a))
-    
-    distance = R * c  # Distance in km
-    
-    # Base time: assume average speed of 25 km/h in Baghdad traffic
-    base_time = (distance / 25) * 60  # Convert to minutes
-    
-    # Add random variation (±20%)
-    base_time = base_time * random.uniform(0.8, 1.2)
-    
-    # Ensure minimum time
-    base_time = max(base_time, 10)
-    
-    # Apply event multiplier
-    final_time = base_time * event_multiplier
-    
-    # Round to nearest minute
-    final_time = round(final_time)
-    
-    return final_time, round(base_time), round(distance, 1)
+# ============================================================
+# SECTION 6: MAIN APPLICATION
+# ============================================================
 
+# Initialize session state
+if 'db' not in st.session_state:
+    st.session_state.db = TrafficDatabase()
+if 'landing_shown' not in st.session_state:
+    st.session_state.landing_shown = False
+if 'current_tab' not in st.session_state:
+    st.session_state.current_tab = "operations"
 
-# ============================================
-# إعدادات الصفحة
-# ============================================
+# Page configuration
 st.set_page_config(
-    page_title="🚕 نظام زحامات بغداد الذكي",
+    page_title="🚕 نظام زحامات بغداد الذكي BITS",
     page_icon="🚕",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ============================================
-# CSS - Glassmorphism & Cyberpunk Gold Theme
-# ============================================
+# Get current system state
+current_time = datetime.now()
+current_weather = AutomationEngine.simulate_weather()
+is_peak = AutomationEngine.is_peak_hour(current_time)
+is_rain = "مطر" in current_weather
 
-# Determine if rain mode
-is_rain_mode = "أمطار غزيرة" in st.session_state.get('selected_event', '')
+weather_multiplier = AutomationEngine.get_weather_multiplier(current_weather)
+time_multiplier = AutomationEngine.PEAK_MULTIPLIER if is_peak else 1.0
+total_multiplier = weather_multiplier * time_multiplier
 
-# Base CSS
-st.markdown(f"""
-    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&display=swap" rel="stylesheet">
-    
-    <style>
-    /* RTL Support */
-    html[dir="rtl"] {{
-        direction: rtl;
-        text-align: right;
-    }}
-    
-    /* Global Font */
-    * {{
-        font-family: 'Cairo', sans-serif !important;
-    }}
-    
-    /* Dark Theme Base */
-    .stApp {{
-        background-color: #0E1117;
-        color: #FAFAFA;
-        {'background: linear-gradient(135deg, #0a1929 0%, #1a2a4a 100%) !important;' if is_rain_mode else ''}
-    }}
-    
-    /* Glassmorphism Effect */
-    .glass-card {{
-        background: rgba(30, 30, 30, 0.7) !important;
-        backdrop-filter: blur(10px) !important;
-        -webkit-backdrop-filter: blur(10px) !important;
-        border: 1px solid rgba(255, 215, 0, 0.3) !important;
-        border-radius: 20px !important;
-        padding: 20px !important;
-        margin: 10px 0 !important;
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important;
-    }}
-    
-    /* Main Title */
-    .main-title {{
-        font-size: 52px;
-        font-weight: 900;
-        color: #FFD700;
-        text-align: center;
-        padding: 30px;
-        text-shadow: 0 0 20px rgba(255, 215, 0, 0.5), 0 0 40px rgba(255, 215, 0, 0.3);
-        font-family: 'Cairo', sans-serif;
-        animation: glow 2s ease-in-out infinite alternate;
-    }}
-    
-    @keyframes glow {{
-        from {{ text-shadow: 0 0 20px rgba(255, 215, 0, 0.5), 0 0 40px rgba(255, 215, 0, 0.3); }}
-        to {{ text-shadow: 0 0 30px rgba(255, 215, 0, 0.8), 0 0 60px rgba(255, 215, 0, 0.5); }}
-    }}
-    
-    /* Neon Gold Button Styling */
-    .stButton > button {{
-        background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%) !important;
-        color: #000000 !important;
-        font-weight: bold !important;
-        border: 2px solid #FFD700 !important;
-        border-radius: 12px !important;
-        padding: 12px 30px !important;
-        transition: all 0.3s ease !important;
-        font-family: 'Cairo', sans-serif !important;
-        position: relative;
-        overflow: hidden;
-    }}
-    
-    .stButton > button:hover {{
-        background: linear-gradient(135deg, #FFC107 0%, #FF8C00 100%) !important;
-        border-color: #FFC107 !important;
-        box-shadow: 0 0 25px rgba(255, 215, 0, 0.6) !important;
-        transform: translateY(-2px) !important;
-    }}
-    
-    .stButton > button:before {{
-        content: '';
-        position: absolute;
-        top: -50%;
-        left: -50%;
-        width: 200%;
-        height: 200%;
-        background: linear-gradient(45deg, transparent, rgba(255,255,255,0.3), transparent);
-        transform: rotate(45deg);
-        animation: shine 3s infinite;
-    }}
-    
-    @keyframes shine {{
-        0% {{ transform: translateX(-100%) rotate(45deg); }}
-        100% {{ transform: translateX(100%) rotate(45deg); }}
-    }}
-    
-    /* Floating Metric Cards */
-    .metric-card {{
-        background: rgba(30, 30, 30, 0.8) !important;
-        backdrop-filter: blur(10px) !important;
-        border: 1px solid rgba(255, 215, 0, 0.4) !important;
-        border-radius: 20px !important;
-        padding: 25px !important;
-        transition: all 0.3s ease !important;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3) !important;
-    }}
-    
-    .metric-card:hover {{
-        transform: translateY(-5px) !important;
-        box-shadow: 0 15px 40px rgba(255, 215, 0, 0.2) !important;
-        border-color: rgba(255, 215, 0, 0.8) !important;
-    }}
-    
-    /* Warning Boxes */
-    .critical-warning {{
-        background: linear-gradient(135deg, rgba(220, 20, 60, 0.9) 0%, rgba(139, 0, 0, 0.9) 100%) !important;
-        color: white;
-        font-size: 28px;
-        font-weight: bold;
-        text-align: center;
-        padding: 30px;
-        border-radius: 20px;
-        border: 3px solid #FFD700;
-        margin: 15px 0;
-        animation: pulse-critical 1.5s ease-in-out infinite;
-    }}
-    
-    @keyframes pulse-critical {{
-        0%, 100% {{ box-shadow: 0 0 20px rgba(220, 20, 60, 0.5); }}
-        50% {{ box-shadow: 0 0 40px rgba(220, 20, 60, 0.8); }}
-    }}
-    
-    .high-warning {{
-        background: linear-gradient(135deg, rgba(255, 99, 71, 0.9) 0%, rgba(255, 69, 0, 0.9) 100%) !important;
-        color: white;
-        font-size: 24px;
-        font-weight: bold;
-        text-align: center;
-        padding: 25px;
-        border-radius: 18px;
-        border: 3px solid #FFD700;
-        margin: 12px 0;
-    }}
-    
-    .normal-info {{
-        background: linear-gradient(135deg, rgba(34, 139, 34, 0.9) 0%, rgba(0, 100, 0, 0.9) 100%) !important;
-        color: white;
-        font-size: 22px;
-        font-weight: bold;
-        text-align: center;
-        padding: 20px;
-        border-radius: 15px;
-        border: 3px solid #FFD700;
-        margin: 10px 0;
-    }}
-    
-    /* Chat Section */
-    .chat-section {{
-        background: rgba(30, 30, 30, 0.8) !important;
-        backdrop-filter: blur(15px) !important;
-        padding: 30px !important;
-        border-radius: 25px !important;
-        border: 2px solid rgba(255, 215, 0, 0.4) !important;
-        margin-top: 30px !important;
-    }}
-    
-    .user-message {{
-        background: rgba(50, 50, 50, 0.9) !important;
-        border-right: 5px solid #FFD700 !important;
-        padding: 18px !important;
-        border-radius: 15px !important;
-        margin: 12px 0 !important;
-    }}
-    
-    .assistant-message {{
-        background: rgba(28, 60, 92, 0.9) !important;
-        border-right: 5px solid #00CED1 !important;
-        padding: 18px !important;
-        border-radius: 15px !important;
-        margin: 12px 0 !important;
-    }}
-    
-    /* Gold accent for headers */
-    h1, h2, h3, h4 {{
-        color: #FFD700 !important;
-        font-family: 'Cairo', sans-serif !important;
-    }}
-    
-    /* Sidebar Styling */
-    .css-1d391kg {{
-        background: rgba(20, 20, 20, 0.95) !important;
-    }}
-    
-    /* Rain Animation */
-    .rain-overlay {{
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        pointer-events: none;
-        z-index: 9999;
-        background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><line x1="10" y1="0" x2="10" y2="30" stroke="rgba(174, 194, 224, 0.3)" stroke-width="1"/></svg>');
-        animation: rain 0.5s linear infinite;
-    }}
-    
-    @keyframes rain {{
-        from {{ background-position: 0 0; }}
-        to {{ background-position: 20px 100px; }}
-    }}
-    
-    /* Trip Forecast Card */
-    .trip-forecast {{
-        background: linear-gradient(135deg, rgba(255, 215, 0, 0.2) 0%, rgba(255, 165, 0, 0.2) 100%) !important;
-        border: 2px solid #FFD700 !important;
-        border-radius: 25px !important;
-        padding: 30px !important;
-        text-align: center !important;
-    }}
-    
-    /* Map Container */
-    .map-container {{
-        border-radius: 20px !important;
-        overflow: hidden !important;
-        border: 3px solid #FFD700 !important;
-    }}
-    
-    /* Section Divider */
-    .section-divider {{
-        height: 3px;
-        background: linear-gradient(90deg, transparent, #FFD700, transparent);
-        margin: 25px 0;
-    }}
-    
-    /* Footer */
-    .footer {{
-        text-align: center;
-        color: #FFD700;
-        padding: 30px;
-        background: linear-gradient(135deg, rgba(30, 30, 30, 0.9) 0%, rgba(40, 40, 40, 0.9) 100%);
-        border-radius: 20px;
-        border: 2px solid #FFD700;
-        margin-top: 30px;
-    }}
-    
-    /* Responsive Design */
-    @media (max-width: 768px) {{
-        .main-title {{
-            font-size: 32px !important;
-            padding: 15px !important;
-        }}
-        .metric-card {{
-            padding: 15px !important;
-        }}
-        .critical-warning, .high-warning, .normal-info {{
-            font-size: 18px !important;
-            padding: 15px !important;
-        }}
-    }}
-    </style>
-    
-    <!-- Rain Effect Overlay -->
-    {'<div class="rain-overlay"></div>' if is_rain_mode else ''}
-    
-    <!-- RTL HTML -->
-    <html dir="rtl" lang="ar"></html>
-""", unsafe_allow_html=True)
+# Apply dynamic CSS
+st.markdown(generate_dynamic_css(current_weather, is_peak, is_rain), unsafe_allow_html=True)
 
-# ============================================
-# العنوان الرئيسي
-# ============================================
-st.markdown('<p class="main-title">🚕 نظام زحامات بغداد الذكي 🛣️</p>', unsafe_allow_html=True)
-st.markdown('<p style="text-align: center; color: #aaa; font-size: 18px;">نظام متقدم للتنبؤ بحركة المرور والتوصيل في مدينة الذهب والأسواق</p>', unsafe_allow_html=True)
-st.markdown("---")
+# Inject JavaScript alerts
+has_road_closure = len([i for i in st.session_state.db.get_active_incidents() if i['severity'] == 'critical']) > 0
+st.markdown(inject_javascript_alerts(total_multiplier, has_road_closure), unsafe_allow_html=True)
 
-# ============================================
-# الشريط الجانبي - المدخلات
-# ============================================
-st.sidebar.header("⚙️ إعدادات النظام")
+# ============================================================
+# LANDING PAGE
+# ============================================================
 
-# اختيار الوقت
-st.sidebar.subheader("🕐 الوقت")
+if not st.session_state.landing_shown:
+    st.markdown(f"""
+    <div class="landing-page">
+        <div class="landing-title">🚕 نظام زحامات بغداد الذكي</div>
+        <div class="landing-subtitle">Baghdad Intelligent Traffic System (BITS) v3.0</div>
+        <div class="landing-subtitle" style="margin-top: 40px; color: #888;">جاري التحميل...</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    import time
+    time.sleep(3)
+    st.session_state.landing_shown = True
+    st.rerun()
 
-col_time1, col_time2 = st.sidebar.columns(2)
-with col_time1:
-    selected_hour = st.slider(
-        "الساعة",
-        min_value=1,
-        max_value=12,
-        value=datetime.now().hour % 12 if datetime.now().hour % 12 != 0 else 12,
-        help="اختر الساعة من 1 إلى 12"
-    )
+# ============================================================
+# SIDEBAR NAVIGATION
+# ============================================================
 
-with col_time2:
-    am_pm = st.radio(
-        "الفترة",
-        ["صباحاً 🌅", "مساءاً 🌙"],
-        index=0 if datetime.now().hour < 12 else 1,
-        horizontal=True
-    )
+st.sidebar.title("🧭 التنقل")
+st.sidebar.markdown("---")
 
-# تحويل إلى تنسيق 24 ساعة
-hour_24 = selected_hour if "صباحاً" in am_pm else selected_hour + 12
-if selected_hour == 12 and "مساءاً" in am_pm:
-    hour_24 = 12
-
-st.sidebar.info(f"🕐 الوقت المحدد: {hour_24}:00")
-
-# ============================================
-# المناطق
-# ============================================
-st.sidebar.subheader("📍 اختيار المنطقة")
-
-area_names = list(BAGHDAD_AREAS.keys())
-selected_area = st.sidebar.selectbox(
-    "المنطقة",
-    area_names,
-    help="اختر منطقة بغداد",
-    index=0
-)
-
-# ============================================
-# الأحداث/الحالات
-# ============================================
-st.sidebar.subheader("☁️ الحالة المرورية")
-
-events = {
-    "يوم عادي": {"icon": "☀️", "multiplier": 1.0},
-    "ساعة الذروة": {"icon": "🚨", "multiplier": 1.8},
-    "مباراة للمنتخ": {"icon": "⚽", "multiplier": 2.5},
-    "أمطار غزيرة": {"icon": "🌧️", "multiplier": 3.5},
-    "حدث وطني": {"icon": "🎌", "multiplier": 2.2},
-    "إغلاق طرق": {"icon": "🚧", "multiplier": 2.8}
+# Navigation tabs
+nav_options = {
+    "operations": "🏠 مركز العمليات",
+    "map": "🗺️ ارسال الخرائط",
+    "predictions": "🔮 تنبؤات الذكاء الاصطناعي",
+    "admin": "🛡️ تحكم المسؤول"
 }
 
-event_names = list(events.keys())
-selected_event = st.sidebar.selectbox(
-    "الحالة",
-    event_names,
-    help="اختر الحالة المرورية الحالية",
-    index=0
-)
+selected_nav = st.sidebar.radio("اختر القسم:", list(nav_options.keys()), 
+                               format_func=lambda x: nav_options[x],
+                               index=list(nav_options.keys()).index(st.session_state.current_tab))
 
-# Store in session state for rain detection
-st.session_state['selected_event'] = selected_event
+st.session_state.current_tab = selected_nav
 
-# ============================================
-# 🔮 Trip Forecaster Section
-# ============================================
+# Sidebar status info
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔮 تنبؤ الرحلة")
+st.sidebar.markdown("### 📊 الحالة الحالية")
 
-start_location = st.sidebar.selectbox(
-    "📍 نقطة الانطلاق",
-    area_names,
-    index=0,
-    key="start_loc"
-)
+# Weather status badge
+weather_status = f"مطر 🌧️" if is_rain else f"{current_weather}"
+status_class = "status-rain" if is_rain else ("status-peak" if is_peak else "status-clear")
+st.sidebar.markdown(f'<span class="status-badge {status_class}">{weather_status}</span>', unsafe_allow_html=True)
 
-end_location = st.sidebar.selectbox(
-    "🏁 الوجهة",
-    area_names,
-    index=1 if len(area_names) > 1 else 0,
-    key="end_loc"
-)
+st.sidebar.markdown(f"**☁️ الطقس:** {current_weather}")
+st.sidebar.markdown(f"**🕐 الوقت:** {current_time.strftime('%H:%M')}")
+st.sidebar.markdown(f"**⏰ ساعة الذروة:** {'نعم' if is_peak else 'لا'}")
+st.sidebar.markdown(f"**📈 معامل السعر:** {total_multiplier}x")
 
-if st.sidebar.button("🔮 احسب وقت الرحلة", key="forecast_btn"):
-    event_multiplier = events[selected_event]['multiplier']
-    final_time, base_time, distance = calculate_trip_time(
-        start_location, 
-        end_location, 
-        event_multiplier
-    )
+# Main title
+st.markdown(f'<p class="landing-title" style="font-size: 42px;">🚕 نظام زحامات بغداد الذكي</p>', unsafe_allow_html=True)
+st.markdown(f'<p style="text-align: center; color: #888; font-size: 18px;">الإصدار 3.0 | {current_time.strftime("%Y-%m-%d %H:%M")}</p>', unsafe_allow_html=True)
+st.markdown("---")
+
+# Global zone names for use in all tabs
+zone_names = list(BaghdadGeographicalIntelligence.ZONES.keys())
+
+# ============================================================
+# TAB 1: OPERATIONS HUB
+# ============================================================
+
+if st.session_state.current_tab == "operations":
+    st.markdown("## 🏠 مركز العمليات")
     
-    st.session_state['trip_forecast'] = {
-        'final_time': final_time,
-        'base_time': base_time,
-        'distance': distance,
-        'start': start_location,
-        'end': end_location,
-        'multiplier': event_multiplier
-    }
-
-# Display trip forecast if available
-if 'trip_forecast' in st.session_state:
-    forecast = st.session_state['trip_forecast']
-    st.sidebar.markdown(f"""
-    <div class="trip-forecast">
-        <h3 style="color: #FFD700; margin-bottom: 15px;">⏱️ وقت الرحلة المتوقع</h3>
-        <h2 style="font-size: 48px; color: #fff; margin: 10px 0;">{forecast['final_time']} دقيقة</h2>
-        <p style="color: #aaa;">من {forecast['start']} إلى {forecast['end']}</p>
-        <p style="color: #aaa;">المسافة: {forecast['distance']} كم</p>
-        {'<p style="color: #ff6b6b;">⚠️ بسبب الزحام الحالي</p>' if forecast['multiplier'] > 1.0 else '<p style="color: #51cf66;">✅ حركة طبيعية</p>'}
-    </div>
-    """, unsafe_allow_html=True)
-
-# ============================================
-# عرض الاختيارات الحالية
-# ============================================
-st.sidebar.markdown("---")
-st.sidebar.markdown(f"**📍 المنطقة:** {BAGHDAD_AREAS[selected_area]['icon']} {selected_area}")
-st.sidebar.markdown(f"**🕐 الساعة:** {hour_24}:00")
-st.sidebar.markdown(f"**☁️ الحالة:** {events[selected_event]['icon']} {selected_event}")
-
-# ============================================
-# المنطق الرئيسي
-# ============================================
-price_multiplier = events[selected_event]['multiplier']
-
-# تطبيق معامل ساعة الذروة تلقائياً
-if 7 <= hour_24 <= 9 or 16 <= hour_24 <= 19:
-    if selected_event == "يوم عادي":
-        price_multiplier = 1.8
-        st.sidebar.warning("🚨 ساعة الذروة تفعل تلقائياً!")
-
-# حساب مستوى الطلب
-if price_multiplier >= 2.5:
-    demand_status = "🚨 ازدحام حرج"
-    demand_color = "critical"
-elif price_multiplier >= 1.8:
-    demand_status = "⚠️ ازدحام عالي"
-    demand_color = "high"
-else:
-    demand_status = "✅ حركة طبيعية"
-    demand_color = "normal"
-
-# ============================================
-# القسم العلوي: لوحة المعلومات والرسوم البيانية
-# ============================================
-st.markdown("## 📊 لوحة المعلومات الفورية")
-
-col1, col2, col3, col4 = st.columns(4)
-
-# Metrics
-active_drivers = random.randint(150, 400)
-pending_orders = random.randint(50, 250)
-base_price = 3000
-final_price = int(base_price * price_multiplier)
-surge_percentage = int((price_multiplier - 1) * 100)
-
-with col1:
-    st.markdown(f"""
-    <div class="metric-card">
-        <p style="color: #aaa; margin: 0;">🚗 السائقين النشطين</p>
-        <h2 style="color: #FFD700; font-size: 36px; margin: 10px 0;">{active_drivers}</h2>
-        <p style="color: {"#51cf66" if random.randint(0,1) else "#ff6b6b"};">{"+" if random.randint(0,1) else ""}{random.randint(-30, 60)}</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col2:
-    st.markdown(f"""
-    <div class="metric-card">
-        <p style="color: #aaa; margin: 0;">📋 الطلبات المعلقة</p>
-        <h2 style="color: #FFD700; font-size: 36px; margin: 10px 0;">{pending_orders}</h2>
-        <p style="color: {"#51cf66" if random.randint(0,1) else "#ff6b6b"};">{"+" if random.randint(0,1) else ""}{random.randint(-40, 40)}</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col3:
-    st.markdown(f"""
-    <div class="metric-card">
-        <p style="color: #aaa; margin: 0;">💰 سعر التوصيلة</p>
-        <h2 style="color: #FFD700; font-size: 32px; margin: 10px 0;">{final_price:,} IQD</h2>
-        <p style="color: {"#ff6b6b" if surge_percentage > 0 else "#51cf66"};">{"+" if surge_percentage > 0 else ""}{surge_percentage}%</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col4:
-    st.markdown(f"""
-    <div class="metric-card">
-        <p style="color: #aaa; margin: 0;">📈 معامل السعر</p>
-        <h2 style="color: #FFD700; font-size: 36px; margin: 10px 0;">{price_multiplier}x</h2>
-        <p style="color: #aaa;">{events[selected_event]['icon']}</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("---")
-
-# ============================================
-# 🗺️ خريطة Baghdad التفاعلية
-# ============================================
-st.markdown("## 🗺️ خريطة المناطق")
-
-# Create map
-baghdad_map = create_baghdad_map(
-    BAGHDAD_AREAS, 
-    selected_area, 
-    price_multiplier, 
-    demand_color
-)
-
-# Display map
-st_folium(
-    baghdad_map,
-    width="100%",
-    height=450,
-    returned_objects=[]
-)
-
-st.markdown("---")
-
-# ============================================
-# 📈 حالة الزحام
-# ============================================
-st.markdown("## 📈 حالة الزحام الحالية")
-
-if demand_color == "critical":
-    st.markdown(f'<div class="critical-warning">{demand_status}</div>', unsafe_allow_html=True)
-    st.error("🚨 **توصية:** توجه جميع السائقين المتاحين إلى هذه المنطقة فوراً!")
-elif demand_color == "high":
-    st.markdown(f'<div class="high-warning">{demand_status}</div>', unsafe_allow_html=True)
-    st.warning("⚠️ **توصية:** زيادة عدد السائقين في المنطقة بنسبة 50%")
-else:
-    st.markdown(f'<div class="normal-info">{demand_status}</div>', unsafe_allow_html=True)
-    st.success("✅ عمليات طبيعية - حافظ على توزيع السائقين المعتاد")
-
-st.markdown("---")
-
-# ============================================
-# 💵 تحليل الأسعار و📊 الطلب المتوقع
-# ============================================
-col_left, col_right = st.columns(2)
-
-with col_left:
-    st.markdown("### 💵 تحليل الأسعار")
-    st.markdown(f"""
-    <div class="glass-card">
-        <p><strong>السعر الأساسي:</strong> {base_price:,} IQD</p>
-        <p><strong>معامل السعر:</strong> {price_multiplier}x</p>
-        <p><strong>السعر النهائي:</strong> {final_price:,} IQD</p>
-    </div>
-    """, unsafe_allow_html=True)
+    # Quick metrics
+    col1, col2, col3, col4 = st.columns(4)
     
-    if price_multiplier >= 2.5:
-        st.error(f"🚨 **ارتفاع حاد:** تم تطبيق معامل {price_multiplier}x!")
-    elif price_multiplier >= 1.8:
-        st.warning(f"📈 **ارتفاع معتدل:** تم تطبيق معامل {price_multiplier}x")
+    active_incidents = st.session_state.db.get_active_incidents()
+    active_drivers = random.randint(150, 400)
+    pending_orders = random.randint(50, 250)
+    base_price = 3000
+    final_price = int(base_price * total_multiplier)
+    
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <p style="color: #aaa; margin: 0;">🚗 السائقين النشطين</p>
+            <h2 style="color: #FFD700; font-size: 36px; margin: 10px 0;">{active_drivers}</h2>
+            <p style="color: #51cf66;">+{random.randint(10, 50)} جديد</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <p style="color: #aaa; margin: 0;">📋 الطلبات المعلقة</p>
+            <h2 style="color: #FFD700; font-size: 36px; margin: 10px 0;">{pending_orders}</h2>
+            <p style="color: #ff6b6b;">+{random.randint(5, 30)} جديد</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <p style="color: #aaa; margin: 0;">💰 سعر التوصيلة</p>
+            <h2 style="color: #FFD700; font-size: 32px; margin: 10px 0;">{final_price:,} IQD</h2>
+            <p style="color: #ff6b6b;">+{int((total_multiplier-1)*100)}%</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown(f"""
+        <div class="metric-card">
+            <p style="color: #aaa; margin: 0;">⚠️ الحوادث النشطة</p>
+            <h2 style="color: #FF5722; font-size: 36px; margin: 10px 0;">{len(active_incidents)}</h2>
+            <p style="color: #aaa;">إغلاق طرق</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Weather and Time Status
+    col_weather, col_time = st.columns(2)
+    
+    with col_weather:
+        st.markdown("### ☁️ حالة الطقس")
+        weather_icon = AutomationEngine.WEATHER_CONDITIONS.get(current_weather, {}).get('icon', '☀️')
+        st.markdown(f"""
+        <div class="glass-card" style="text-align: center;">
+            <h1 style="font-size: 48px;">{weather_icon}</h1>
+            <h3>{current_weather}</h3>
+            <p>معامل الطقس: <strong>{weather_multiplier}x</strong></p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_time:
+        st.markdown("### 🕐 الوقت الحالي")
+        peak_icon = "🚨" if is_peak else "✅"
+        st.markdown(f"""
+        <div class="glass-card" style="text-align: center;">
+            <h1 style="font-size: 48px;">{peak_icon}</h1>
+            <h3>{current_time.strftime('%H:%M')}</h3>
+            <p>ساعة الذروة: <strong>{'نعم' if is_peak else 'لا'}</strong></p>
+            <p>معامل الوقت: <strong>{time_multiplier}x</strong></p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Active Incidents Display
+    st.markdown("### ⚠️ الحوادث المرورية النشطة")
+    if active_incidents:
+        for incident in active_incidents[:5]:
+            severity_class = f"incident-{incident['severity']}"
+            st.markdown(f"""
+            <div class="incident-card {severity_class}">
+                <h4>{incident['zone']} - {incident['affected_road']}</h4>
+                <p>{incident['description']}</p>
+                <p style="color: #aaa;">الخطورة: {incident['severity']}</p>
+            </div>
+            """, unsafe_allow_html=True)
     else:
-        st.info("💚 **سعري طبيعي** - لا يوجد ارتفاع في الأسعار")
+        st.success("✅ لا توجد حوادث مرورية نشطة")
 
-with col_right:
-    st.markdown("### 📊 الطلب المتوقع حسب الساعة")
+
+# ============================================================
+# TAB 2: MAP DISPATCH
+# ============================================================
+
+elif st.session_state.current_tab == "map":
+    st.markdown("## 🗺️ ارسال الخرائط")
+    st.markdown("### احسب المسار والأسعار")
     
+    # Route Selection
+    col_origin, col_dest = st.columns(2)
+    
+    zone_names = list(BaghdadGeographicalIntelligence.ZONES.keys())
+    
+    with col_origin:
+        origin = st.selectbox("📍 نقطة الانطلاق", zone_names, index=0)
+    
+    with col_dest:
+        destination = st.selectbox("🏁 الوجهة", zone_names, index=min(1, len(zone_names)-1))
+    
+    if st.button("🚀 احسب السعر والمسار", type="primary"):
+        routing = SmartRoutingSystem(st.session_state.db)
+        pricing = routing.calculate_route_pricing(
+            origin, destination, 
+            weather_multiplier, time_multiplier, is_peak
+        )
+        
+        st.session_state.last_pricing = pricing
+        st.session_state.last_route = (origin, destination)
+    
+    # Display Pricing Options
+    if 'last_pricing' in st.session_state:
+        pricing = st.session_state.last_pricing
+        origin, destination = st.session_state.last_route
+        
+        st.markdown(f"### 💰 خيارات التسعير من {origin} إلى {destination}")
+        st.markdown(f"**المسافة:** {pricing['distance_km']} كم")
+        
+        col_fast, col_econ = st.columns(2)
+        
+        with col_fast:
+            fastest = pricing['fastest']
+            st.markdown(f"""
+            <div class="route-card route-card-fastest">
+                <h3 style="color: #1e88e5;">🏎️ {fastest['name']}</h3>
+                <p>{fastest['description']}</p>
+                <h2 style="color: #FFD700; font-size: 42px;">{fastest['price']:,} IQD</h2>
+                <p>الوقت: {fastest['time_minutes']} دقيقة</p>
+                <p>المسافة: {fastest['distance_km']} كم</p>
+                <p>المعامل: {fastest['multiplier']}x</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col_econ:
+            economic = pricing['economic']
+            st.markdown(f"""
+            <div class="route-card route-card-economic">
+                <h3 style="color: #4caf50;">💰 {economic['name']}</h3>
+                <p>{economic['description']}</p>
+                <h2 style="color: #FFD700; font-size: 42px;">{economic['price']:,} IQD</h2>
+                <p>الوقت: {economic['time_minutes']} دقيقة</p>
+                <p>المسافة: {economic['distance_km']} كم</p>
+                <p>المعامل: {economic['multiplier']}x</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # Interactive Map
+    st.markdown("### 🗺️ خريطة Baghdad التفاعلية")
+    
+    # Create map centered on Baghdad
+    baghdad_center = [33.3128, 44.3615]
+    m = folium.Map(location=baghdad_center, zoom_start=11, tiles='CartoDB dark_matter')
+    
+    # Add markers for all zones
+    for zone_name, zone_data in BaghdadGeographicalIntelligence.ZONES.items():
+        folium.Marker(
+            location=[zone_data['lat'], zone_data['lon']],
+            popup=f"<b>{zone_name}</b><br>{zone_data['type']}<br>السعر: {zone_data['base_price']}",
+            tooltip=f"{zone_data['icon']} {zone_name}",
+            icon=folium.Icon(color='blue', icon=zone_data['icon'], prefix='fa')
+        ).add_to(m)
+    
+    # Add incident markers
+    for incident in st.session_state.db.get_active_incidents():
+        color = 'red' if incident['severity'] == 'critical' else ('orange' if incident['severity'] == 'high' else 'yellow')
+        folium.Marker(
+            location=[incident['latitude'], incident['longitude']],
+            popup=f"<b>⚠️ {incident['zone']}</b><br>{incident['description']}",
+            icon=folium.Icon(color=color, icon='exclamation-triangle', prefix='fa')
+        ).add_to(m)
+    
+    st_folium(m, width="100%", height=400)
+    
+    # Reverse Geocoding Demo
+    st.markdown("### 🔍 محاكاةReverse Geocoding")
+    st.markdown("أدخل إحداثيات للحصول على اسم المنطقة:")
+    
+    col_lat, col_lon = st.columns(2)
+    with col_lat:
+        lat_input = st.number_input("خط العرض", value=33.3209, format="%.4f")
+    with col_lon:
+        lon_input = st.number_input("خط الطول", value=44.3661, format="%.4f")
+    
+    if st.button("🔍 تحديد المنطقة"):
+        zone_name, region = BaghdadGeographicalIntelligence.get_zone_by_coordinates(lat_input, lon_input)
+        distance = BaghdadGeographicalIntelligence.haversine_distance(
+            lat_input, lon_input, 
+            BaghdadGeographicalIntelligence.ZONES.get(zone_name, {}).get('lat', 33.3128),
+            BaghdadGeographicalIntelligence.ZONES.get(zone_name, {}).get('lon', 44.3615)
+        )
+        st.success(f"✅ المنطقة: {zone_name} ({region}) - المسافة: {distance:.2f} كم")
+
+
+# ============================================================
+# TAB 3: AI PREDICTIONS
+# ============================================================
+
+elif st.session_state.current_tab == "predictions":
+    st.markdown("## 🔮 تنبؤات الذكاء الاصطناعي")
+    st.markdown("### تحليل حركة المرور المتوقع")
+    
+    # Get predictions for all zones
+    predictions = AIPredictiveAnalysis.get_all_predictions()
+    
+    for pred in predictions:
+        risk_color = "#f44336" if pred['risk_level'] == "critical" else ("#ff9800" if pred['risk_level'] == "high" else "#4caf50")
+        
+        st.markdown(f"""
+        <div class="glass-card">
+            <h3>{pred['zone']} - يوم {pred['day']}</h3>
+            <p>الساعة: {pred['hour']}:00</p>
+            <p style="color: {risk_color}; font-size: 20px; font-weight: bold;">
+                مستوى الخطورة: {pred['risk_level'].upper()}
+            </p>
+            <p>الثقة: {pred['confidence']}%</p>
+            <ul>
+                {"".join([f"<li>{w}</li>" for w in pred['warnings']])}
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Trend Analysis Chart
+    st.markdown("### 📈 تحليل الاتجاهات")
+    
+    # Create sample data for chart
     hours = list(range(24))
-    base_demand = [25, 18, 12, 8, 8, 12, 28, 55, 75, 85, 80, 72,
-                   68, 62, 68, 78, 88, 95, 92, 82, 72, 62, 48, 32]
+    demand_data = [25, 18, 12, 8, 8, 12, 28, 55, 75, 85, 80, 72, 68, 62, 68, 78, 88, 95, 92, 82, 72, 62, 48, 32]
     
-    if selected_event == "مباراة للمنتخ":
-        event_multiplier_chart = 2.5
-    elif selected_event == "أمطار غزيرة":
-        event_multiplier_chart = 3.5
-    elif selected_event == "ساعة الذروة":
-        event_multiplier_chart = 1.8
-    elif selected_event == "إغلاق طرق":
-        event_multiplier_chart = 2.8
-    elif selected_event == "حدث وطني":
-        event_multiplier_chart = 2.2
-    else:
-        event_multiplier_chart = 1.0
+    if is_peak:
+        demand_data = [int(d * 1.4) for d in demand_data]
+    if is_rain:
+        demand_data = [int(d * 1.5) for d in demand_data]
     
-    event_demand = [int(d * event_multiplier_chart) for d in base_demand]
-    
-    df = pd.DataFrame({'الساعة': hours, 'الطلب': event_demand})
+    df = pd.DataFrame({'الساعة': hours, 'الطلب': demand_data})
     chart_data = df.set_index('الساعة')
     
     st.bar_chart(chart_data, color='#FFD700')
     
-    st.write(f"📍 **الساعة المحددة:** {hour_24}:00 - **الطلب:** {event_demand[hour_24]} طلب")
-
-# تحليل المنطقة
-st.markdown("---")
-st.markdown("### 🗺️ تحليل المنطقة")
-
-area_data = BAGHDAD_AREAS[selected_area]
-col_a, col_b, col_c = st.columns(3)
-
-with col_a:
-    st.markdown(f"""
-    <div class="glass-card" style="text-align: center;">
-        <p style="color: #aaa;">🚦 الطلب المعتاد</p>
-        <h3 style="color: #FFD700;">{area_data["typical_demand"]}</h3>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col_b:
-    st.markdown(f"""
-    <div class="glass-card" style="text-align: center;">
-        <p style="color: #aaa;">🚗 السائقون المطلوبون</p>
-        <h3 style="color: #FFD700;">{area_data["drivers"]}</h3>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col_c:
-    st.markdown(f"""
-    <div class="glass-card" style="text-align: center;">
-        <p style="color: #aaa;">🏷️ نوع المنطقة</p>
-        <h3 style="color: #FFD700;">{area_data["type"]}</h3>
-    </div>
-    """, unsafe_allow_html=True)
-
-# ============================================
-# 💬 مساعد Baghdad الذكي (Smart Chat)
-# ============================================
-st.markdown("---")
-st.markdown('<div class="chat-section">', unsafe_allow_html=True)
-st.markdown("### 💬 مساعد Baghdad الذكي 🤖")
-
-# عرض حالة المحادثة
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
-
-# عرض الرسائل
-for message in st.session_state.chat_history:
-    if message['role'] == 'user':
-        st.markdown(f'<div class="user-message">👤 <strong>أنت:</strong> {message["content"]}</div>', unsafe_allow_html=True)
+    # Zone recommendations
+    st.markdown("### 💡 التوصيات")
+    high_risk_zones = [p['zone'] for p in predictions if p['risk_level'] in ['critical', 'high']]
+    
+    if high_risk_zones:
+        st.warning(f"⚠️ مناطق ذات ازدحام عالي: {', '.join(high_risk_zones)}")
+        st.markdown("- يوصى بزيادة السائقين بنسبة 50%")
+        st.markdown("- تجنب المسارات عبر هذه المناطق")
     else:
-        st.markdown(f'<div class="assistant-message">🤖 <strong>المساعد:</strong><br>{message["content"]}</div>', unsafe_allow_html=True)
+        st.success("✅ حركة مرور طبيعية في جميع المناطق")
 
-# إدخال السؤال
-user_question = st.text_input(
-    "💭 اسأل عن حالة الزحام:",
-    placeholder="مثال: كيف الوضع؟ أو لماذا السعر مرتفع؟ أو ما أفضل وقت؟",
-    key="chat_input"
-)
 
-# أزرار الإرسال والمسح
-col_btn1, col_btn2 = st.columns([1, 4])
-with col_btn1:
-    if st.button("إرسال 📤", key="send_btn"):
-        if user_question:
-            st.session_state.chat_history.append({
-                'role': 'user',
-                'content': user_question
-            })
+# ============================================================
+# TAB 4: ADMIN OVERRIDE
+# ============================================================
+
+elif st.session_state.current_tab == "admin":
+    st.markdown("## 🛡️ تحكم المسؤول")
+    st.markdown("### إدارة الحوادث المرورية")
+    
+    # Password protection (simple demo)
+    password = st.text_input("كلمة المرور", type="password")
+    
+    if password == "admin123" or password == "":
+        # Show incidents management
+        st.markdown("#### الحوادث النشطة")
+        
+        incidents = st.session_state.db.get_active_incidents()
+        
+        if incidents:
+            for incident in incidents:
+                col_incident, col_action = st.columns([3, 1])
+                
+                with col_incident:
+                    severity_class = f"incident-{incident['severity']}"
+                    st.markdown(f"""
+                    <div class="incident-card {severity_class}">
+                        <h4>{incident['zone']}</h4>
+                        <p>{incident['description']}</p>
+                        <p>الطريق: {incident['affected_road']}</p>
+                        <p>النوع: {incident['incident_type']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col_action:
+                    if st.button(f"حذف {incident['id']}", key=f"delete_{incident['id']}"):
+                        st.session_state.db.remove_incident(incident['id'])
+                        st.success("تم الحذف!")
+                        st.rerun()
+        
+        # Add new incident
+        st.markdown("#### إضافة حادث جديد")
+        
+        with st.form("add_incident"):
+            new_zone = st.selectbox("المنطقة", zone_names)
+            new_type = st.selectbox("نوع الحادث", ["road_closure", "accident", "construction", "weather"])
+            new_severity = st.selectbox("الخطورة", ["low", "medium", "high", "critical"])
+            new_desc = st.text_input("الوصف")
+            new_road = st.text_input("الطريق المتأثر")
             
-            # استدعاء الدالة
-            response = generate_response(
-                user_question, 
-                selected_area, 
-                selected_event, 
-                hour_24, 
-                price_multiplier,
-                BAGHDAD_AREAS
-            )
+            # Get coordinates for selected zone
+            new_lat = BaghdadGeographicalIntelligence.ZONES.get(new_zone, {}).get('lat', 33.3128)
+            new_lon = BaghdadGeographicalIntelligence.ZONES.get(new_zone, {}).get('lon', 44.3615)
             
-            st.session_state.chat_history.append({
-                'role': 'assistant',
-                'content': response
-            })
+            submitted = st.form_submit_button("إضافة الحادث")
             
-            st.rerun()
+            if submitted:
+                if st.session_state.db.add_incident(new_zone, new_type, new_severity, new_desc, new_lat, new_lon, new_road):
+                    st.success("✅ تم إضافة الحادث بنجاح!")
+                    st.rerun()
+                else:
+                    st.error("❌ فشل في إضافة الحادث")
+        
+        # Statistics
+        st.markdown("#### الإحصائيات")
+        incident_counts = st.session_state.db.get_incident_count_by_zone()
+        
+        if incident_counts:
+            df_incidents = pd.DataFrame(list(incident_counts.items()), columns=['المنطقة', 'عدد الحوادث'])
+            st.bar_chart(df_incidents.set_index('المنطقة'), color='#FF5722')
 
-with col_btn2:
-    if st.button("مسح المحادثة 🗑️", key="clear_btn"):
-        st.session_state.chat_history = []
-        st.rerun()
 
-st.markdown('</div>', unsafe_allow_html=True)
+# ============================================================
+# FOOTER
+# ============================================================
 
-# ============================================
-# الذيل (Footer)
-# ============================================
 st.markdown("---")
 st.markdown("""
-<div class="footer">
-    <p style="font-size: 24px; margin-bottom: 10px;"><strong>🚕 نظام زحامات Baghdad الذكي</strong></p>
-    <p>نظام متقدم للتنبؤ بحركة المرور | الإصدار 2.0</p>
-    <p>🛣️ جعل التنقل أسهل في مدينة الذهب والأسواق</p>
-    <p style="margin-top: 15px; font-size: 14px; color: #888;">Powered by Streamlit & Folium</p>
+<div style="text-align: center; padding: 30px; color: #888;">
+    <h3>🚕 نظام زحامات Baghdad الذكي</h3>
+    <p>Baghdad Intelligent Traffic System (BITS) v3.0</p>
+    <p>نظام متقدم للتنبؤ بحركة المرور والتسعير الذكي</p>
+    <p style="margin-top: 20px; font-size: 14px;">
+        Powered by Streamlit | Folium | SQLite3
+    </p>
 </div>
 """, unsafe_allow_html=True)
